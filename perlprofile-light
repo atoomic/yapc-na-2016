@@ -1,0 +1,35 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use v5.014;
+
+profile(@ARGV) unless caller;
+
+sub profile {
+    my (@args) = @_;
+
+    foreach my $script_or_module (@args) {
+        
+        my $file = -e $script_or_module ? $script_or_module : undef;
+        die "Invalid name: $script_or_module" if !$file && $script_or_module !~ qr{^[-:a-zA-z0-9_/\.]+$};
+
+        my $esc = $file ? qq{"$file"} : $script_or_module;
+        my ( $cmd, $rss );
+        if ( -e q{/proc} ) { # unix
+            $rss = q{grep VmRSS /proc/$$/status};
+        } else { # mac os x
+            $rss = q{ps -o rss -p $$ | tail -1};
+        }
+
+        $cmd = qq/$^X -e 'require $esc; print int(qx{$rss}) . "\n"'/;
+
+        print qx{$cmd};
+    }
+
+    return;
+}
+
+
+

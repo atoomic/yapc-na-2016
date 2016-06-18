@@ -1,0 +1,45 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use v5.014;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+analyze(@ARGV) unless caller;
+
+sub analyze {
+    my (@args) = @_;
+
+    # lazy getopt
+    my $list_files = grep { $_ eq '--files' } @args;
+    @args = grep { $_ ne '--files' } @args if $list_files;
+
+    die unless scalar @args;
+
+    my $lib = "$FindBin::Bin/../lib";
+
+    foreach my $script_or_module (@args) {
+
+
+        my $file = -e $script_or_module ? $script_or_module : undef;
+        if ( !$file ) {
+            $file = qx{$^Xdoc -l $script_or_module}; # perldoc call   
+            die if $?;
+            chomp $file;
+        }        
+
+        my @list = qx{$^X -I$lib -d:ListDeps -c $file 2>/dev/null};
+
+        print join '', sort { lc($a) cmp lc($b) } map {
+            if ( !$list_files ) {
+                $_ =~ s{\.pm$}{};
+                $_ =~ s{/+}{::}g;
+            }
+            $_;
+        } @list;
+    }
+
+    return 0;
+}

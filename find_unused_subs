@@ -1,0 +1,646 @@
+#!/bin/env perl
+
+use strict;
+use warnings;
+
+use v5.14;
+use Getopt::Long;
+use PPI;
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# Create the PPI document, and add an isa method that takes a list
+sub PPI::Element::isa {
+    my ( $self, @classes ) = @_;
+    foreach my $class (@classes) {
+        return 1 if $self->UNIVERSAL::isa($class);
+    }
+    return 0;
+}
+
+# sub PPI::Element::namespace {
+#     my $self = shift;
+
+#     return eval { $self->parent->find_first('PPI::Statement::Package')->namespace } || 'main';
+# }
+
+package Analyze;
+
+use Test::More;    # used for lazy debugging
+use Moo; # switch to Simple::Accessor
+foreach my $attr (qw{Document content subs symbols list barewords methods packages}) {
+    has $attr, is => 'lazy';
+}
+
+use Scalar::Util qw(blessed);
+use File::Slurp      ();
+use File::Temp ();
+
+our $DEBUG = 0;
+
+sub _build_Document {
+    my ($self) = @_;
+
+    die unless ref $self->content eq 'SCALAR' or -f $self->content;
+
+    my $Document = PPI::Document->new( $self->content );
+    die "Could not create PDOM!" unless ref $Document;
+
+    return $Document;
+}
+
+sub stringify {
+    my $self = shift;
+    return $self->Document->serialize;
+}
+
+sub debug {
+    my (@msg) = @_;
+    return unless $DEBUG;
+
+    say join ' ', @msg;
+
+    return;
+}
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# Get all of the subroutine definitions
+sub _build_subs {
+    my $self = shift;
+
+    my %subs;
+
+    my $all_ppi_subs = $self->Document->find(
+        sub {
+            $_[1]->isa('PPI::Statement::Sub')
+
+              # not a BEGIN, CHECK, UNITCHECK, INIT and END,
+              && !$_[1]->reserved()
+
+              #&& ! $_[1]->isa('PPI::Statement::Scheduled');
+        }
+    ) || [];
+
+    foreach my $sub (@$all_ppi_subs) {
+        my $name = $sub->name;
+
+        # use the fullname
+        if ( $name !~ qr{::} ) {
+            $name = $self->get_package_for($sub) . '::' . $name;
+        }
+        $subs{$name} = $sub;
+    }
+
+    debug "* All sub definitions: ", sort keys %subs;
+
+    return \%subs;
+}
+
+# list of methods with the scope where they might be used
+sub _build_methods {
+    my $self = shift;
+
+    my @methods;
+
+    my $search = $self->Document->find(
+        sub {
+            $_[1]->isa('PPI::Token::Operator')
+              && $_[1]->content eq '->';
+        }
+    ) || [];
+
+    foreach my $op (@$search) {
+        next unless eval { $op->snext_sibling->class eq 'PPI::Token::Word' };
+
+        # maybe something special for nw ?
+        push @methods, $op->snext_sibling->content;
+    }
+
+    debug "* All methods: ", sort @methods;
+
+    #note explain $all_statements;
+    return \@methods;
+}
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# find the sub calls that use &
+#	&foo
+#	&foo()
+#	\&foo
+#   *foo
+sub _build_symbols {
+    my $self = shift;
+
+    my @symbols;
+
+    my $search = $self->Document->find(
+        sub {
+            $_[1]->isa('PPI::Token::Symbol')
+              && ( $_[1]->symbol_type eq '&'
+                || $_[1]->symbol_type eq '*' );
+        }
+    ) || [];
+
+    foreach my $elt (@$search) {
+        my $name = $elt->content =~ s/\A[&*]//r;    # /
+
+        if ( $name !~ qr{::} ) {
+            $name = $self->get_package_for($elt) . '::' . $name;
+        }
+
+        push @symbols, $name;
+    }
+
+    @symbols = sort @symbols;
+    debug "* All symbols: @symbols";
+
+    return \@symbols;
+}
+
+sub get_package_for {
+    my ( $self, $elt ) = @_;
+
+    local $@;
+
+    my $pkg;
+
+    # = eval { $elt->parent->find_first('PPI::Statement::Package')->namespace };
+    {
+        my $line         = $elt->line_number;
+        my $all_packages = $self->packages;
+        foreach my $v (@$all_packages) {
+            my $pkg_candidate = $v->{name};
+            if ( $v->{from} < $line && ( $v->{to} == 0 || $line <= $v->{to} ) ) {
+                return $pkg_candidate;
+
+            }
+        }
+    }
+
+    $pkg //= 'main';
+
+    return $pkg;
+}
+
+# do not cache the value as when removing a doc cache need to be cleared
+sub _build_packages {
+    my $self = shift;
+
+    # use an array as a package (like main) can be defined multiple times
+    my @packages;
+
+    # find return the elements sorted
+    my $search = $self->Document->find('PPI::Statement::Package') || [];
+
+    foreach my $pkg (@$search) {
+        if ( scalar @packages ) {
+            $packages[-1]->{'to'} = $pkg->line_number - 1;
+        }
+        push @packages, { name => $pkg->namespace, from => $pkg->line_number, to => 0, file_scoped => $pkg->file_scoped };
+    }
+
+    return \@packages;
+}
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# find the sub calls that use parens
+#	foo()
+#   foo( @args )
+sub _build_list {
+    my $self = shift;
+
+    my @list;
+    my $search = $self->Document->find(
+        sub {
+            $_[1]->isa('PPI::Token::Word')
+              && $_[1]->snext_sibling
+              && $_[1]->snext_sibling->isa('PPI::Structure::List');
+        }
+    ) || [];
+
+    foreach my $elt (@$search) {
+        my $name = $elt->literal;
+        if ( $name !~ qr{::} ) {
+            $name = $self->get_package_for($elt) . '::' . $name;
+        }
+        push @list, $name;
+    }
+
+    debug "* All list: @list";
+
+    return \@list;
+}
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# find the sub calls that are barewords
+#	foo
+#	foo + bar
+# but not
+#	use vars qw( baz );
+#	sub quux { ... }
+sub _build_barewords {
+    my $self = shift;
+
+    my %reserved = map { $_, $_ } qw( use vars sub my BEGIN INIT new );
+    my @barewords = map { $_->literal }
+      grep {
+        # Take out the Words that are preceded by 'sub'
+        # That is, take out the subroutine definitions
+        # I couldn't get this to work inside the find()
+        my $previous  = $_->previous_sibling;
+        my $sprevious = $_->sprevious_sibling;
+
+        !( blessed($previous) && blessed($sprevious) && $previous->isa('PPI::Token::Whitespace') && $sprevious->isa('PPI::Token::Word') && $sprevious->literal eq 'sub' )
+
+      } @{
+        $self->Document->find(
+            sub {
+                $_[1]->isa('PPI::Token::Word')
+                  && $_[1]->next_sibling->isa(
+                    qw(
+                      PPI::Token::Whitespace
+                      PPI::Token::Structure
+                      PPI::Token::List
+                      PPI::Token::Operator
+                      )
+                  ) && ( !exists $reserved{ $_[1]->literal } );
+            }
+          )
+          || []
+      };
+
+    debug "* All barewords: @barewords";
+
+    push @barewords, sort keys %reserved;
+
+    return \@barewords;
+}
+
+sub get_used_sub {
+    my $self = shift;
+
+    my $symbols   = $self->symbols   // [];
+    my $list      = $self->list      // [];
+    my $barewords = $self->barewords // [];
+
+    my %used = map { $_ => 1 } ( @$symbols, @$list, @$barewords );
+    debug "* All used:", map { ( ' ', $_ ) } sort @{ [ keys %used ] };
+
+    return \%used;
+}
+
+sub is_used_method {
+    my ( $self, $sub ) = @_;
+    my $methods = $self->methods;
+
+    return scalar grep { $sub =~ qr{::$_$} } @$methods;
+}
+
+sub remove_unused_subs {
+    my $self = shift;
+
+    my $subs = $self->subs;           # all subs
+    my $used = $self->get_used_sub;
+
+    #note explain
+    #note explain $self->symbols;
+    # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+    # The unused have to be the left over ones
+    # exception for methods:
+    #   if a method is called on any object do not remove the function (can be improve for new & co)
+    my @unused = sort grep { !exists $used->{$_} && !$self->is_used_method($_) } keys %$subs;
+
+    debug "* All unused: @unused";
+
+    my @removed;
+
+    foreach my $sub (@unused) {
+        next if $self->is_blacklist_sub($sub);
+        debug "- deleting $sub";
+        if ( !defined $subs->{$sub} ) {
+            debug "error: sub '$sub' not defined";
+            next;
+        }
+        $subs->{$sub}->delete;
+        push @removed, $sub;
+    }
+
+    # return removed sub list
+    return @removed;
+
+}
+
+{
+    my @BLACKLIST_START = qw{
+      Try::Tiny::
+    };
+
+    # this show a defect when package is incorrect...
+    my @BLACKLIST_SUBS = qw{
+      script
+      run
+      new
+    };
+
+    sub is_blacklist_sub {
+        my ( $self, $sub ) = @_;
+
+        return 1 if grep { $sub =~ qr{^$_} } @BLACKLIST_START;
+        return 1 if grep { $sub =~ qr{\b$_$} } @BLACKLIST_SUBS;
+        return 0;
+    }
+
+}
+
+sub perl_check {
+    my ( $self, $file ) = @_;
+
+    # File::Temp ?
+    $file //= '.yapack'.$$;
+    my $tmp = $file . q{.tmp}; 
+    File::Slurp::write_file( $tmp, $self->stringify ) or die "Cannot write $file: $!";
+    qx{$^X -c $tmp};
+    my $ok = $? == 0 ? 1 : 0;
+    unlink $tmp;
+
+    return $ok;
+}
+
+package main;
+
+use FindBin;
+use constant FATPACK => $FindBin::Bin . q{/yapack};
+
+use File::Slurp qw{read_file write_file};
+
+my ( $AUTO_PACK, $verbose, $help, $debug, $limit ) = ( 1, 1 );
+
+GetOptions(
+    "verbose!" => \$verbose,
+    "debug!"   => \$debug,
+    "help!"    => \$help,
+    "pack!"    => \$AUTO_PACK,
+    "limit=i"  => \$limit,
+) or do { usage(); exit 1; };
+
+do { usage(); exit } if $help;
+
+unless (@ARGV) {
+    die "Missing argument: did your forget to specify the script or package path ?\n";
+}
+
+if ($debug) {
+    $Analyze::DEBUG = 1;
+    $verbose        = 1;
+
+}
+
+sub verbose {
+    my (@msg) = @_;
+    return unless $verbose;
+    return say @msg;
+}
+*v = \&verbose;
+
+sub debug {
+    goto \&verbose if $debug;
+    return;
+}
+
+exit run(@ARGV);
+
+sub run {
+    my (@args) = @_;    # for now one single file at a time
+
+    my $prog = shift @args;
+    die "'$prog' does not exist" unless defined $prog && -e $prog;
+
+    if ( $prog =~ qr{\.pm$} ) {
+        my $content = read_file($prog) or die;
+        say "Analyzing module: '$prog'";
+        my $analyze = Analyze->new( content => \$content );
+
+        # remove pods
+        my $pods = $analyze->Document->find('PPI::Token::Pod') || [];
+        foreach my $pod (@$pods) {
+            $pod->delete;
+        }
+
+        # get all subs
+        my $subs = $analyze->subs;
+
+        $content = $analyze->stringify;
+        $content .= join "\n",
+          "{ # force to call all subs ",
+          "package main;",
+
+          #"if (eval q{0}) { ",
+          map( { $_ . "();" } sort keys %$subs ),
+
+          #"}",
+          "\n}",
+          1;
+
+        my $prog_with_calls = $prog . ".calls";
+        $analyze = Analyze->new( content => \$content );
+        write_file( $prog_with_calls, $analyze->stringify );
+
+        $prog = $prog_with_calls;
+        $prog = do_fatpack($prog_with_calls) if $AUTO_PACK;
+    }
+    else {
+        say "Analyzing program: '$prog'";
+
+        # replace program name with the fatpacked version
+        $prog = do_fatpack($prog) if $AUTO_PACK;
+
+    }
+
+    my $content = read_file($prog) or die;
+    my $analyze = Analyze->new( content => \$content );
+
+    # save the copy with original code source parsed
+    write_file( "$prog.original", $analyze->stringify )
+      or die "Cannot write original: $!";
+
+    my $out = $prog . '.cut.pl';
+
+    my @all_removed;
+    my $analyze_required = 1;
+    my $c;
+    my $previously_unused = '';    # extra protection to avoid infinite loop
+    while ($analyze_required) {
+        say "### Analyze #", ++$c;
+        my @removed     = $analyze->remove_unused_subs();
+        my $new_content = $analyze->stringify;
+        write_file( $out, $new_content ) or die "Cannot write $out: $!";
+
+        push @all_removed, @removed;
+        say map { "# - $_\n" } sort @removed;
+
+        $analyze_required = scalar @removed ? 1 : 0;
+
+        my $unused_str = join ',', sort @removed;
+        if ( $unused_str eq $previously_unused ) {
+            say "Warning: stopping analyze, detect infinite loop";
+            last;
+        }
+        $previously_unused = $unused_str;
+
+        if ( $limit && $c == $limit ) {
+            say "Limit of analyze loops reached: ", $limit;
+            last;
+        }
+
+        if ( !$analyze->perl_check ) {
+            say "Warning: $out does not compile cleanly (perl -c fails)";
+            last;
+        }
+
+        $analyze = Analyze->new( content => \$new_content )
+          if $analyze_required;
+        say ".";
+    }
+
+    say "\n*List of useless functions:\n\n",
+      join( "\n", sort @all_removed ), "\n";
+
+    get_stats_for_subs( \@all_removed );
+
+    return 0;
+}
+
+sub get_stats_for_subs {
+    my $calls = shift;
+
+    #note explain $calls;
+
+    my %subs_by_module;
+    foreach my $c (@$calls) {
+        my $pkg = get_package_from_subname($c);
+        $subs_by_module{$pkg} //= { 'unused' => [], 'defined' => [] };
+
+        push @{ $subs_by_module{$pkg}->{'unused'} }, $c;
+    }
+
+    foreach my $mod ( sort keys %subs_by_module ) {
+
+        # a file can provide more than a single package
+        my $subs = eval { get_subs_from_package($mod) } or next;
+        foreach my $sub (@$subs) {
+            my $pkg = get_package_from_subname($sub);
+            next unless defined $subs_by_module{$pkg};
+            push @{ $subs_by_module{$pkg}->{'defined'} }, $sub;
+        }
+    }
+
+    my @stats;
+
+    # can only be done after the previous loop as functions might end in different namespace
+    my $max = 10;
+    foreach my $pkg ( sort keys %subs_by_module ) {
+        my @unused  = uniq( @{ $subs_by_module{$pkg}->{'unused'} } );
+        my @defined = uniq( @{ $subs_by_module{$pkg}->{'defined'} } );
+        next unless @defined;
+        my $ratio = int( scalar @unused * 100 / scalar @defined );
+
+        push @stats, [ $pkg, $ratio, scalar @unused, scalar @defined ];
+        my $l = length($pkg);
+        $max = $l > $max ? $l : $max;
+    }
+
+    foreach my $s ( sort { $b->[1] <=> $a->[1] } @stats ) {
+        say sprintf( "%-" . $max . "s: %3d %% of subs are unused [ %d/%d ]", @$s );
+    }
+
+    return \@stats;
+}
+
+sub uniq {
+    my (@a) = @_;
+    my %h = map { $_ => 1 } @a;
+    my @sorted = sort keys %h;
+    return @sorted;
+}
+
+sub get_package_from_subname {
+    my $s = shift;
+    $s =~ s{::[^:]+$}{};
+
+    return $s;
+}
+
+# a file can provide more than a single package
+sub get_subs_from_package {
+    my $package = shift;
+
+    my $path = _package_to_file($package);
+    my $analyze = Analyze->new( content => $path );
+
+    # remove pods
+    $analyze->Document->prune('PPI::Token::Pod');
+
+    # get all subs
+    my $subs = $analyze->subs;
+    return [ sort keys %$subs ];
+
+    # # remove the package name
+    # return [ sort map { $_ =~ s{^${package}::}{}; $_; } keys %$subs ];
+}
+
+sub _package_to_file {
+    my $s = shift;
+
+    $s =~ s{::}{/}g;
+    $s .= '.pm';
+
+    die "'$s' does not exist" unless -f $s;
+
+    return $s;
+
+}
+
+sub do_fatpack {
+    my ($prog) = @_;
+
+    v("Fatpacking: $prog");
+
+    my $fatpack = FATPACK;
+    die "Cannot find fatpack script" unless -x $fatpack;
+
+    qx{$fatpack $prog 2>&1 >/dev/null};
+    die $? if $? != 0;
+
+    return $prog . '.fat';
+}
+
+sub usage {
+    print <<EOU;
+$0 Detect unused subroutines from a script or module
+
+This script is currently `alpha` software...
+
+It should be used as a tool to detect unused subroutines
+Multiple known limitations and false positive are going to be raised:
+- methods
+- overwrite of CORE:: functions
+- dynamic calls..
+
+By default the script or the module is going to be packed.
+
+options:
+    --help          this help (amazing)
+    --verbose       add some extra informations while packing (disabled by default)
+    --debug         enable verbose and perform some extra checks for debugging (slower)
+    --no-pack       do not pack the script or module before analyzing it (pack is enabled by default)
+    --limit=X       limit the analyze to X (integer value) iterations (default will try to do the max)
+
+The argument can be a module, a package or a script.
+
+Sample usages:
+> $0 lib/My/Module.pm
+> $0 --no-pack my-script.pl
+
+EOU
+
+    return;
+}

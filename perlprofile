@@ -1,0 +1,97 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use v5.014;
+
+use FindBin;
+use Getopt::Long;
+
+my $verbose = 0;
+my $help    = 0;
+my $details = 0;
+
+GetOptions(
+    "details!" => \$details,
+    "verbose!" => \$verbose,
+    "help!"    => \$help,
+) or do { usage(); exit 1; };
+
+unless (@ARGV) {
+    usage();
+    die "Missing argument: Nothing to profile.\n";
+}
+
+do { usage(); exit } if $help;
+
+profile(@ARGV);
+
+sub profile {
+    my (@args) = @_;
+
+    foreach my $script_or_module (@args) {
+        
+        say "# Profiling module ", $script_or_module if $verbose;
+        my $file = -e $script_or_module ? $script_or_module : undef;
+        die "Invalid name: $script_or_module" if !$file && $script_or_module !~ qr{^[-:a-zA-z0-9_/\.]+$};
+
+        my $esc = $file ? qq{"$file"} : $script_or_module;
+
+        my $cmd;
+
+        if ( !$details ) {    # default mode
+            my $rss;
+            if ( -e q{/proc} ) { # unix
+                $rss = q{grep VmRSS /proc/$$/status};
+            } else { # mac os x
+                $rss = q{ps -o rss -p $$ | tail -1};
+            }
+
+            $cmd = qq{$^X -e 'require $esc; print int(qx{$rss}) . "\n";'};
+        }
+        else {
+            $cmd = qq{$^X -I$FindBin::Bin/../ -d:ListDepsDetails -e 'require $esc'};
+        }
+
+        say "# Running: ", $cmd if $verbose;
+        print "$script_or_module: ";
+        print qx{$cmd};
+    }
+
+    return;
+}
+
+sub usage {
+    print <<EOU;
+$0 [options] script|module|perl-file(.pm...)
+
+Profile memory required by a perl module and its dependencies.
+
+$0 [list of modules or files]
+
+options:
+
+  --verbose     Display messages for missing files
+  --details     Profile with details for each modules
+                By default only display the total
+                differ from details as some extra modules are loaded
+
+The argument can be a module, a package or a script.
+
+Sample usages:
+RSS memory required by one package
+> $0 Whostmgr::Resellers
+
+Details memory after loading each package
+> $0 --details A::Module
+> $0 lib/My/Module.pm
+> $0 my-script.pl
+
+RSS memory for a list of packages
+> $0 lib/*.pm
+
+
+EOU
+    return;
+}
