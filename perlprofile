@@ -55,7 +55,6 @@ sub profile {
         }
 
         say "# Running: ", $cmd if $verbose;
-        print "$script_or_module: ";
         print qx{$cmd};
     }
 
