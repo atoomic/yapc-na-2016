@@ -5,6 +5,7 @@ CHECK {
 		next if $module eq 'Devel/ListDeps.pm'; # ...
 		print qq{$module\n};
 	}
+	exit;
 }
 
 1;
