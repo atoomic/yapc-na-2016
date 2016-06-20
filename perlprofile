@@ -47,14 +47,14 @@ sub profile {
             } else { # mac os x
                 $rss = q{ps -o rss -p $$ | tail -1};
             }
-
             $cmd = qq{$^X -e 'require $esc; print int(qx{$rss}) . "\n";'};
         }
         else {
             $cmd = qq{$^X -I$FindBin::Bin/../ -d:ListDepsDetails -e 'require $esc'};
         }
 
-        say "# Running: ", $cmd if $verbose;
+        say "# Running: ", $cmd if $verbose;      
+        print "$script_or_module: " unless $details;  
         print qx{$cmd};
     }
 
