@@ -10,4 +10,4 @@ use Digest   ();
 use Encode   ();
 use FindBin  ();
 
-print qx{grep VmRSS /proc/$$/status};
+print qx{grep VmRSS /proc/$$/status} if -e q{/proc};

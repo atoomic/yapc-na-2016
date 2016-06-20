@@ -7,12 +7,12 @@ package Devel::ListDepsDetails;
 BEGIN {
     sub get_memory {
         my $m;
-        if ( -e q{/proc} ) { # unix
-            $m = int qx{grep VmRSS /proc/$$/status};
+        if ( -e qq{/proc/$$/status} ) { # unix
+            $m = qx{grep VmRSS /proc/$$/status};
         } else { # mac os x
-            $m = int qx{ps -o rss -p $$ | tail -1};
+            $m = qx{ps -o rss -p $$ | tail -1};
         }
-        return $m;
+        return int $m;
     }
 
     my @inc = sort { $b cmp $a } @INC;

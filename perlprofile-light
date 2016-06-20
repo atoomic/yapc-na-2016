@@ -15,21 +15,14 @@ sub profile {
         my $file = -e $script_or_module ? $script_or_module : undef;
         die "Invalid name: $script_or_module" if !$file && $script_or_module !~ qr{^[-:a-zA-z0-9_/\.]+$};
 
-        my $esc = $file ? qq{"$file"} : $script_or_module;
-        my ( $cmd, $rss );
-        if ( -e q{/proc} ) { # unix
-            $rss = q{grep VmRSS /proc/$$/status};
-        } else { # mac os x
-            $rss = q{ps -o rss -p $$ | tail -1};
+        if ( !$file ) {
+            $file = qx{$^Xdoc -l $script_or_module};
+            $? == 0 or die "Cannot find file for $script_or_module";
+            chomp $file;
         }
 
-        $cmd = qq/$^X -e 'require $esc; print int(qx{$rss}) . "\n"'/;
-
-        print qx{$cmd};
+        say qx[$^X -c -d:ProcessMemory $file 2>/dev/null];
     }
 
     return;
 }
-
-
-
