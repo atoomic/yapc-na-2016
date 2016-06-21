@@ -16,7 +16,7 @@ sub profile {
         die "Invalid name: $script_or_module" if !$file && $script_or_module !~ qr{^[-:a-zA-z0-9_/\.]+$};
 
         if ( !$file ) {
-            $file = qx{$^Xdoc -l $script_or_module};
+            $file = qx{$^X -S perldoc -l $script_or_module}; # $^Xdoc :-)
             $? == 0 or die "Cannot find file for $script_or_module";
             chomp $file;
         }
@@ -26,3 +26,4 @@ sub profile {
 
     return;
 }
+
