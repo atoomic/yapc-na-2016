@@ -25,7 +25,7 @@ sub analyze {
 
         my $file = -e $script_or_module ? $script_or_module : undef;
         if ( !$file ) {
-            $file = qx{$^Xdoc -l $script_or_module}; # perldoc call   
+            $file = qx{$^X -S perldoc -l $script_or_module}; # perldoc call   
             die if $?;
             chomp $file;
         }        
