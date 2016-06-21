@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
@@ -26,10 +26,15 @@ sub PPI::Element::isa {
 package Analyze;
 
 use Test::More;    # used for lazy debugging
-use Moo; # switch to Simple::Accessor
+use Simple::Accessor qw{Document content subs symbols list barewords methods packages};
+
+=pod
+# alternate for animal lovers
+use Moo;
 foreach my $attr (qw{Document content subs symbols list barewords methods packages}) {
     has $attr, is => 'lazy';
 }
+=cut
 
 use Scalar::Util qw(blessed);
 use File::Slurp      ();
@@ -433,10 +438,8 @@ sub run {
           "{ # force to call all subs ",
           "package main;",
 
-          #"if (eval q{0}) { ",
           map( { $_ . "();" } sort keys %$subs ),
 
-          #"}",
           "\n}",
           1;
 
