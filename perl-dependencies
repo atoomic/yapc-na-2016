@@ -22,7 +22,6 @@ sub analyze {
 
     foreach my $script_or_module (@args) {
 
-
         my $file = -e $script_or_module ? $script_or_module : undef;
         if ( !$file ) {
             $file = qx{$^X -S perldoc -l $script_or_module}; # perldoc call   
@@ -32,7 +31,7 @@ sub analyze {
 
         my @list = qx{$^X -I$lib -d:ListDeps -c $file 2>/dev/null};
 
-        print join '', sort { lc($a) cmp lc($b) } map {
+        map { print } sort { lc($a) cmp lc($b) } map {
             if ( !$list_files ) {
                 $_ =~ s{\.pm$}{};
                 $_ =~ s{/+}{::}g;
