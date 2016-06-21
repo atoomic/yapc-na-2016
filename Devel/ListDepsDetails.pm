@@ -7,9 +7,9 @@ package Devel::ListDepsDetails;
 BEGIN {
     sub get_memory {
         my $m;
-        if ( -e qq{/proc/$$/status} ) { # unix
+        if ( -e q{/proc} ) { # unix
             $m = qx{grep VmRSS /proc/$$/status};
-        } else { # mac os x
+        } else { # mac os x (not consistent)
             $m = qx{ps -o rss -p $$ | tail -1};
         }
         return int $m;
