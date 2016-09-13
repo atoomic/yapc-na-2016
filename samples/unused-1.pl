@@ -8,7 +8,7 @@ sub b { a() }
 sub c { b() + d() }
 sub d {}
 sub e { f() }
-sub f {}
+sub f { print 42 }
 sub g { e() }
 
 #a();
