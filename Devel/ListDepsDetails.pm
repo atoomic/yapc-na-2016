@@ -15,12 +15,18 @@ BEGIN {
         return int $m;
     }
 
-    my @inc = sort { $b cmp $a } @INC;
+    my @inc = sort { length $b <=> length $a or $a cmp $b } @INC;
     sub short  {
         my $s = shift;
 
         foreach my $in ( @inc ) {
-            $s =~ s{$in/}{} and return $s; # $poor editor
+            next unless $s =~ s{^$in/?}{};
+            
+            if ( $s =~ qr{\.pm$} ) {
+                $s =~ s{\.pm$}{};
+                $s =~ s{/+}{::}g;
+            }
+            last;
         }
 
         return $s;
@@ -32,13 +38,10 @@ BEGIN {
         my ( $package, $file, $line ) = caller;
 
         return if $file eq '-e' || $file eq '-E';
+        return if $file =~ qr{^\(eval};
+
         return if $seen{$file}++;
 
-        my $code;
-        {
-            no strict 'refs';    ## no critic (ProhibitNoStrict)
-            $code = \@{"::_<$file"};
-        }
         $file ||= '';
 
         my $mem   = get_memory();
@@ -63,7 +66,7 @@ BEGIN {
             }
         }
 
-        print sprintf( "[%5s => %8d] %-50s from %-30s at line %d: %s\n", ( $delta > 0 ? '+' : '' ) . $delta, $mem, ( short($file) || 'undef' ), short($fromfile), $fromline, '' );
+        print sprintf( "[%5s => %8d] %-50s from %-30s at line %d\n", ( $delta > 0 ? '+' : '' ) . $delta, $mem, ( short($file) || 'undef' ), short($fromfile), $fromline );
 
         return;
     }
